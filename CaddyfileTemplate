@@ -1,0 +1,93 @@
+{
+    {{ if .Debug }} debug {{ end }}
+    admin off
+    auto_https off
+    servers {
+        {{ if .TrustedProxies }}
+        # 信任所有来源IP，会保留 X-Forwarded-* 的所有请求头
+        trusted_proxies static {{ .TrustedProxies }}
+        {{ end }}
+
+        max_header_size 1mb
+    }
+}
+
+(@Header) {
+    encode gzip
+    header {
+        # enable HSTS（强制使用HTTPS访问）
+        Strict-Transport-Security max-age=31536000;
+
+        # disable clients from sniffing the media type（禁止客户端内容嗅探）
+        X-Content-Type-Options nosniff
+
+        # clickjacking protection(当前站点不能显示在别的站点的Frame中，只能是同源的Frame)
+        X-Frame-Options SAMEORIGIN
+
+        # 检测到反射的跨站点脚本（XSS）攻击时阻止页面加载
+        X-XSS-Protection "1; mode=block";
+
+        # keep referrer data off of HTTP connections
+        Referrer-Policy no-referrer-when-downgrade
+    }
+    log {
+        output stdout
+        format json
+        level {{.LogLevel}}
+    }
+}
+# ----------------------------------------------- Proxy -----------------------------------------------------------------
+{{ if .Metrics }}
+:{{.MetricsPort}} {
+    # 开启指标
+    metrics /metrics
+}
+{{ end }}
+
+:{{.Port}} {
+    import @Header
+    {{ $proxy_size := len .Proxies }}
+    {{ $not_proxy := le $proxy_size 0 }}
+    {{ $not_default_proxy_to := not .DefaultProxyTo }}
+    {{ if and $not_proxy $not_default_proxy_to }}
+    respond "I'm OK"
+    {{ end }}
+    {{ range $index, $value := .Proxies }}
+    reverse_proxy {{ $value.PathPrefix }} {
+        to    {{ $value.ProxyTo }}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    {{ end }}
+    {{ if .DefaultProxyTo }}
+    reverse_proxy {
+        to    {{ .DefaultProxyTo }}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_down +Access-Control-Allow-Methods *
+        header_down +Access-Control-Allow-Headers *
+        header_down +Access-Control-Allow-Origin *
+    }
+    {{ end }}
+}
+
+
+{{ range $index, $value := .Domains }}
+{{$value.Domain}} {
+    import @Header
+    reverse_proxy {
+        to    {{ $value.ProxyTo }}
+        header_up -X-Forwarded-For
+        header_up -X-Forwarded-Host
+        header_up -X-Forwarded-Proto
+        header_up -remote_ip
+        header_up -remote_port
+        header_up -host
+        header_up -uri
+        header_down +Access-Control-Allow-Methods *
+        header_down +Access-Control-Allow-Headers *
+        header_down +Access-Control-Allow-Origin *
+    }
+}
+{{ end }}
+
